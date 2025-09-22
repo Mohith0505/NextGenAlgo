@@ -124,11 +124,17 @@ Next action: Run through the frontend flows manually and extend integration test
 - Migrated the strategy scheduler to a database-backed service with cron validation, REST endpoints, and job context storage.
 - Hooked webhook events into the scheduler service, persisting job context and triggering the strategy dispatcher stub for future automation.
 
-Next action: Connect Celery-dispatched jobs to real strategy execution and persist run metrics for analytics/Timescale.
-
 - Connected Celery-dispatched strategy jobs to persist run metrics and mark completion via StrategyService.record_run_metrics in ackend/app/tasks/strategy.py; dispatcher now returns run id for downstream processing. Next: wire real execution logic and link ExecutionRuns to runs for detailed analytics.
 - Wired Celery strategy runs to execution-group orders; dispatcher triggers broker fan-out, links ExecutionRuns to StrategyRun IDs, and records latency/allocation metrics for analytics dashboards.
 - Implemented StrategyRunner executing paper/live runs via execution groups and backtest simulations; Celery task now logs run events and records metrics/logs through StrategyService for analytics-ready telemetry.
 - Webhook ingestion now auto-triggers strategy runs via scheduler.trigger_job, closing the loop between external signals and the execution pipeline.
 - Enhanced strategies UI to surface live run telemetry, performance stats, and recent logs using new StrategyRunner outputs for rapid validation of automation flows.
 - Added StrategyRunner integration tests exercising paper/live fan-out and backtest simulation flows to guard metrics/log output; backend pytest suite passes (`pytest tests/test_strategy_runner.py`).
+- Expanded RMS automation capabilities with new database fields (migration `f4a9d2539771_add_rms_automation_flags.py`), auto-enforcement logic, and `/api/rms/enforce` endpoint to trigger safeguards programmatically.
+- Added targeted RMS unit tests covering status automation cues and auto-enforce notifications; backend suite passes via `backend/.venv/Scripts/python -m pytest backend/tests/test_rms_service.py`.
+- Refreshed Risk Management UI with automation toggles, automation signal tables, and one-click automation runner tied to the new backend actions.
+- Strategy start flow now merges saved parameters with UI overrides, dispatches Celery runs asynchronously with fallback to in-process execution, and logs run context for traceability.
+- Strategies workspace now exposes advanced execution controls (group selection, order parameters, run mode toggles) alongside inline validation tied to the enhanced StrategyService.
+- Authored `docs/git.md` so future contributors follow the clean-repo workflow, daily Git hygiene, and branching conventions.
+
+Next action: Productionize automation by wiring external notifications and enabling live broker execution under Celery supervision.

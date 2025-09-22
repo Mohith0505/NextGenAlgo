@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import StatCard from "../components/StatCard";
 import DataTable from "../components/DataTable";
 import NotificationBanner from "../components/NotificationBanner";
@@ -7,10 +7,21 @@ import { api } from "../api";
 import { formatCurrency, formatNumber } from "../utils/formatters";
 
 const configFields = [
-  { key: "max_daily_loss", label: "Max Daily Loss" },
-  { key: "max_daily_lots", label: "Max Daily Lots" },
-  { key: "exposure_limit", label: "Exposure Limit" },
-  { key: "margin_buffer_pct", label: "Margin Buffer %" },
+  { key: "max_loss", label: "Max Loss (Cumulative)", type: "number", step: "0.01" },
+  { key: "max_lots", label: "Max Lots / Order", type: "number", step: "1" },
+  { key: "profit_lock", label: "Profit Lock", type: "number", step: "0.01" },
+  { key: "trailing_sl", label: "Trailing Stop", type: "number", step: "0.01" },
+  { key: "max_daily_loss", label: "Max Daily Loss", type: "number", step: "0.01" },
+  { key: "max_daily_lots", label: "Max Daily Lots", type: "number", step: "1" },
+  { key: "drawdown_limit", label: "Drawdown Limit", type: "number", step: "0.01" },
+  { key: "exposure_limit", label: "Exposure Limit", type: "number", step: "0.01" },
+  { key: "margin_buffer_pct", label: "Margin Buffer %", type: "number", step: "0.01" },
+  { key: "auto_square_off_enabled", label: "Auto Square-Off", type: "boolean" },
+  { key: "auto_square_off_buffer_pct", label: "Square-Off Buffer %", type: "number", step: "0.01" },
+  { key: "auto_hedge_enabled", label: "Auto Hedge", type: "boolean" },
+  { key: "auto_hedge_ratio", label: "Hedge Ratio", type: "number", step: "0.01" },
+  { key: "notify_email", label: "Email Alerts", type: "boolean" },
+  { key: "notify_telegram", label: "Telegram Alerts", type: "boolean" },
 ];
 
 function RiskManagement() {
@@ -21,6 +32,9 @@ function RiskManagement() {
   const [message, setMessage] = useState("");
   const [updating, setUpdating] = useState(false);
   const [formState, setFormState] = useState({});
+  const [automationRunning, setAutomationRunning] = useState(false);
+  const [automationResult, setAutomationResult] = useState([]);
+  const [hasRunAutomations, setHasRunAutomations] = useState(false);
 
   async function loadData() {
     try {
@@ -31,12 +45,16 @@ function RiskManagement() {
       ]);
       setConfig(configRes);
       setStatus(statusRes);
-      setFormState({
-        max_daily_loss: configRes?.max_daily_loss ?? "",
-        max_daily_lots: configRes?.max_daily_lots ?? "",
-        exposure_limit: configRes?.exposure_limit ?? "",
-        margin_buffer_pct: configRes?.margin_buffer_pct ?? "",
+      const nextState = {};
+      configFields.forEach(({ key, type }) => {
+        const value = configRes?.[key];
+        if (type === "boolean") {
+          nextState[key] = Boolean(value);
+        } else {
+          nextState[key] = value ?? "";
+        }
       });
+      setFormState(nextState);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -54,13 +72,18 @@ function RiskManagement() {
     setMessage("");
     setUpdating(true);
     try {
-      const payload = Object.fromEntries(
-        Object.entries(formState).filter(([, value]) => value !== "" && value !== null)
-      );
-      Object.keys(payload).forEach((key) => {
-        const numeric = Number(payload[key]);
-        if (!Number.isNaN(numeric)) {
-          payload[key] = numeric;
+      const payload = {};
+      configFields.forEach(({ key, type }) => {
+        const value = formState[key];
+        if (type === "boolean") {
+          if (value !== undefined) {
+            payload[key] = Boolean(value);
+          }
+        } else if (value !== "" && value !== null && value !== undefined) {
+          const numeric = Number(value);
+          if (!Number.isNaN(numeric)) {
+            payload[key] = numeric;
+          }
         }
       });
       const response = await api.updateRmsConfig(payload);
@@ -74,14 +97,37 @@ function RiskManagement() {
     }
   }
 
+  async function handleRunAutomations() {
+    setError("");
+    setMessage("");
+    setAutomationRunning(true);
+    try {
+      const response = await api.enforceRms();
+      const actions = response?.actions ?? [];
+      setAutomationResult(actions);
+      setHasRunAutomations(true);
+      setMessage(actions.length ? "Automations executed." : "No automations triggered.");
+      await loadData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAutomationRunning(false);
+    }
+  }
+
   const alertRows = (status?.alerts ?? []).map((alert, index) => ({
     index: index + 1,
     message: alert,
   }));
 
-  const alertColumns = [
+  const automationRows = (status?.automations ?? []).map((entry, index) => ({
+    index: index + 1,
+    message: entry,
+  }));
+
+  const tableColumns = [
     { key: "index", label: "#" },
-    { key: "message", label: "Alert" },
+    { key: "message", label: "Detail" },
   ];
 
   const statusCards = status
@@ -93,13 +139,25 @@ function RiskManagement() {
         },
         { label: "Notional Exposure", value: formatCurrency(status.notional_exposure) },
         { label: "Available Margin", value: formatCurrency(status.available_margin) },
-      ]
+        status.loss_remaining != null
+          ? { label: "Loss Remaining", value: formatCurrency(status.loss_remaining) }
+          : null,
+        status.lots_remaining != null
+          ? {
+              label: "Lots Remaining",
+              value: formatNumber(status.lots_remaining, { maximumFractionDigits: 0 }),
+            }
+          : null,
+      ].filter(Boolean)
     : [];
 
   return (
     <section className="page">
       <h1>Risk Management (RMS)</h1>
-      <p>Live guardrails protecting capital, with configurable thresholds per environment.</p>
+      <p>
+        Configure automated guardrails that defend capital before, during, and after every trade. Update thresholds
+        and trigger one-touch automations when needed.
+      </p>
 
       {error && <NotificationBanner type="danger" message={error} />}
       {message && <NotificationBanner type="info" message={message} />}
@@ -112,22 +170,43 @@ function RiskManagement() {
             <div className="card">
               <h2>Configuration</h2>
               <form className="form-grid" onSubmit={handleSubmit}>
-                {configFields.map((field) => (
-                  <label key={field.key} className="form-control">
-                    <span>{field.label}</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={formState[field.key] ?? ""}
-                      onChange={(event) =>
-                        setFormState((prev) => ({
-                          ...prev,
-                          [field.key]: event.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                ))}
+                {configFields.map((field) => {
+                  const fieldValue = formState[field.key];
+                  if (field.type === "boolean") {
+                    return (
+                      <label key={field.key} className="form-control toggle">
+                        <span>{field.label}</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(fieldValue)}
+                          onChange={(event) =>
+                            setFormState((prev) => ({
+                              ...prev,
+                              [field.key]: event.target.checked,
+                            }))
+                          }
+                        />
+                      </label>
+                    );
+                  }
+
+                  return (
+                    <label key={field.key} className="form-control">
+                      <span>{field.label}</span>
+                      <input
+                        type="number"
+                        step={field.step ?? "0.01"}
+                        value={fieldValue ?? ""}
+                        onChange={(event) =>
+                          setFormState((prev) => ({
+                            ...prev,
+                            [field.key]: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  );
+                })}
                 <button className="btn primary" type="submit" disabled={updating}>
                   {updating ? "Saving..." : "Save Settings"}
                 </button>
@@ -140,14 +219,44 @@ function RiskManagement() {
                   <StatCard key={card.label} {...card} />
                 ))}
               </div>
+              <div className="automation-actions">
+                <button
+                  className="btn secondary"
+                  type="button"
+                  onClick={handleRunAutomations}
+                  disabled={automationRunning}
+                >
+                  {automationRunning ? "Running..." : "Run Automations"}
+                </button>
+                {hasRunAutomations ? (
+                  automationResult.length ? (
+                    <ul className="automation-list">
+                      {automationResult.map((entry, index) => (
+                        <li key={index}>{entry}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="muted">Automations ran cleanly; no action required.</p>
+                  )
+                ) : (
+                  <p className="muted">Automations have not been executed in this session.</p>
+                )}
+              </div>
             </div>
           </div>
 
-          <h2>Alerts</h2>
+          <h2>Active Alerts</h2>
           <DataTable
-            columns={alertColumns}
+            columns={tableColumns}
             data={alertRows}
             emptyMessage="RMS has not raised alerts yet."
+          />
+
+          <h2>Automation Signals</h2>
+          <DataTable
+            columns={tableColumns}
+            data={automationRows}
+            emptyMessage="No automation triggers are active."
           />
         </>
       )}

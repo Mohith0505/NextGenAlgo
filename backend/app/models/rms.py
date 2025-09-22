@@ -1,8 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,6 +22,13 @@ class RmsRule(Base):
     max_daily_lots: Mapped[int | None] = mapped_column(Integer)
     exposure_limit: Mapped[float | None] = mapped_column(Numeric(18, 2))
     margin_buffer_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    drawdown_limit: Mapped[float | None] = mapped_column(Numeric(18, 2))
+    auto_square_off_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_square_off_buffer_pct: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    auto_hedge_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_hedge_ratio: Mapped[float | None] = mapped_column(Numeric(5, 2))
+    notify_email: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notify_telegram: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow

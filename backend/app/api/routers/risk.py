@@ -53,3 +53,13 @@ def rms_square_off(
 ) -> RmsSquareOffResponse:
     user = _require_user(current_user)
     return rms_service.trigger_square_off(user.id)
+
+
+@router.post("/enforce")
+def rms_auto_enforce(
+    rms_service: RmsService = Depends(get_rms_service),
+    current_user: Optional[User] = Depends(get_current_user),
+) -> dict[str, list[str]]:
+    user = _require_user(current_user)
+    actions = rms_service.auto_enforce(user.id)
+    return {"actions": actions}

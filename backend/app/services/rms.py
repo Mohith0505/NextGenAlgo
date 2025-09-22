@@ -34,6 +34,12 @@ class _DailySnapshot:
     available_margin: float
 
 
+@dataclass(slots=True)
+class _AutomationCue:
+    code: str
+    message: str
+
+
 class RmsViolationError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -66,6 +72,8 @@ class RmsService:
     def get_status(self, user_id: uuid.UUID) -> RmsStatusRead:
         rule = self._get_or_create_rule(user_id)
         snapshot = self._daily_snapshot(user_id)
+        automation_cues = self._automation_recommendations(rule, snapshot)
+        automations = [cue.message for cue in automation_cues]
         alerts: list[str] = []
         lots_remaining = None
         if rule.max_daily_lots:
@@ -74,8 +82,9 @@ class RmsService:
                 alerts.append("Daily lot limit is nearly exhausted")
         loss_remaining = None
         if rule.max_daily_loss is not None:
-            loss_remaining = max(rule.max_daily_loss + snapshot.day_pnl, 0.0)
-            if snapshot.day_pnl <= -0.8 * float(rule.max_daily_loss):
+            max_loss_value = float(rule.max_daily_loss)
+            loss_remaining = max(max_loss_value + snapshot.day_pnl, 0.0)
+            if snapshot.day_pnl <= -0.8 * max_loss_value:
                 alerts.append("Daily loss approaching limit")
         if rule.exposure_limit is not None and snapshot.notional_exposure >= float(rule.exposure_limit) * 0.9:
             alerts.append("Exposure near configured limit")
@@ -91,6 +100,7 @@ class RmsService:
             available_margin=snapshot.available_margin,
             margin_buffer_pct=float(rule.margin_buffer_pct) if rule.margin_buffer_pct is not None else None,
             alerts=alerts,
+            automations=automations,
         )
 
     def evaluate_pre_trade(self, user_id: uuid.UUID, payload: OrderCreate) -> None:
@@ -133,7 +143,35 @@ class RmsService:
                     "Order violates configured margin buffer",
                 )
 
-    def trigger_square_off(self, user_id: uuid.UUID) -> RmsSquareOffResponse:
+    def auto_enforce(self, user_id: uuid.UUID) -> list[str]:
+        rule = self._get_or_create_rule(user_id)
+        snapshot = self._daily_snapshot(user_id)
+        cues = self._automation_recommendations(rule, snapshot)
+        executed: list[str] = []
+        square_off_executed = False
+        hedge_executed = False
+        for cue in cues:
+            if cue.code == "auto_square_off":
+                if square_off_executed:
+                    continue
+                response = self.trigger_square_off(user_id, reason=cue.message, automated=True)
+                executed.append(f"{cue.message} ({len(response.positions)} positions queued)")
+                self._record_notifications(rule, user_id, cue.message)
+                square_off_executed = True
+            elif cue.code == "auto_hedge":
+                if hedge_executed:
+                    continue
+                ratio = self._decimal_to_float(rule.auto_hedge_ratio) or 1.0
+                self._log_rms_event(
+                    user_id,
+                    f"Auto hedge queued (ratio {ratio:.2f}): {cue.message}",
+                )
+                executed.append(cue.message)
+                self._record_notifications(rule, user_id, cue.message)
+                hedge_executed = True
+        return executed
+
+    def trigger_square_off(self, user_id: uuid.UUID, *, reason: str | None = None, automated: bool = False) -> RmsSquareOffResponse:
         positions = self._user_positions(user_id)
         position_snapshots = [
             PositionSnapshot(
@@ -145,20 +183,114 @@ class RmsService:
             for pos in positions
             if pos.qty != 0
         ]
-        message = "Square-off request recorded; execution to be handled by downstream worker"
+        default_message = "Square-off request recorded; execution to be handled by downstream worker"
+        if reason:
+            response_message = reason
+            log_message = "{} RMS square-off initiated: {}".format(
+                "Automated" if automated else "Manual",
+                reason,
+            )
+        elif automated:
+            response_message = "Automated RMS square-off triggered"
+            log_message = "Automated RMS square-off triggered"
+        else:
+            response_message = default_message
+            log_message = "Manual RMS square-off requested"
         log_entry = LogEntry(
             user_id=user_id,
             type=LogType.rms,
-            message="Manual RMS square-off requested",
+            message=log_message,
             created_at=utcnow(),
         )
         self.session.add(log_entry)
         self.session.commit()
-        return RmsSquareOffResponse(triggered=bool(position_snapshots), message=message, positions=position_snapshots)
+        return RmsSquareOffResponse(triggered=bool(position_snapshots), message=response_message, positions=position_snapshots)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _automation_recommendations(self, rule: RmsRule, snapshot: _DailySnapshot) -> list[_AutomationCue]:
+        cues: list[_AutomationCue] = []
+        if rule.auto_square_off_enabled:
+            trigger_loss: float | None = None
+            daily_loss_limit = self._decimal_to_float(rule.max_daily_loss)
+            if daily_loss_limit is not None:
+                buffer_pct = self._decimal_to_float(rule.auto_square_off_buffer_pct) or 0.0
+                buffer_pct = max(buffer_pct, 0.0)
+                buffer_multiplier = 1.0 - min(buffer_pct, 100.0) / 100.0
+                trigger_loss = -daily_loss_limit * buffer_multiplier
+            else:
+                drawdown_limit = self._decimal_to_float(rule.drawdown_limit)
+                if drawdown_limit is not None:
+                    trigger_loss = -drawdown_limit
+            if trigger_loss is not None and snapshot.day_pnl <= trigger_loss:
+                limit_value = abs(trigger_loss)
+                cues.append(
+                    _AutomationCue(
+                        code="auto_square_off",
+                        message=(
+                            f"Auto square-off triggered: day PnL {snapshot.day_pnl:.2f} "
+                            f"breached loss limit {limit_value:.2f}"
+                        ),
+                    )
+                )
+            profit_lock = self._decimal_to_float(rule.profit_lock)
+            if profit_lock is not None and snapshot.day_pnl >= profit_lock:
+                cues.append(
+                    _AutomationCue(
+                        code="auto_square_off",
+                        message=(
+                            f"Auto square-off triggered: profit lock target {profit_lock:.2f} reached "
+                            f"(PnL {snapshot.day_pnl:.2f})"
+                        ),
+                    )
+                )
+        if rule.auto_hedge_enabled:
+            ratio = self._decimal_to_float(rule.auto_hedge_ratio) or 1.0
+            exposure_limit = self._decimal_to_float(rule.exposure_limit)
+            if exposure_limit is not None:
+                hedge_trigger = exposure_limit * 0.9
+                if snapshot.notional_exposure >= hedge_trigger:
+                    cues.append(
+                        _AutomationCue(
+                            code="auto_hedge",
+                            message=(
+                                f"Auto hedge triggered: exposure {snapshot.notional_exposure:.2f} "
+                                f"within 10% of limit {exposure_limit:.2f} (ratio {ratio:.2f})"
+                            ),
+                        )
+                    )
+            elif snapshot.notional_exposure > 0:
+                cues.append(
+                    _AutomationCue(
+                        code="auto_hedge",
+                        message=(
+                            f"Auto hedge triggered: exposure {snapshot.notional_exposure:.2f} "
+                            f"requires coverage (ratio {ratio:.2f})"
+                        ),
+                    )
+                )
+        return cues
+
+    def _record_notifications(self, rule: RmsRule, user_id: uuid.UUID, detail: str) -> None:
+        channels: list[str] = []
+        if rule.notify_email:
+            channels.append("email")
+        if rule.notify_telegram:
+            channels.append("telegram")
+        for channel in channels:
+            self._log_rms_event(user_id, f"Notification queued via {channel}: {detail}")
+
+    def _log_rms_event(self, user_id: uuid.UUID, message: str) -> None:
+        entry = LogEntry(
+            user_id=user_id,
+            type=LogType.rms,
+            message=message,
+            created_at=utcnow(),
+        )
+        self.session.add(entry)
+        self.session.commit()
+
     def _get_or_create_rule(self, user_id: uuid.UUID) -> RmsRule:
         stmt: Select[RmsRule] = select(RmsRule).where(RmsRule.user_id == user_id).limit(1)
         rule = self.session.execute(stmt).scalar_one_or_none()
@@ -241,6 +373,13 @@ class RmsService:
             max_daily_lots=rule.max_daily_lots,
             exposure_limit=self._decimal_to_float(rule.exposure_limit),
             margin_buffer_pct=self._decimal_to_float(rule.margin_buffer_pct),
+            drawdown_limit=self._decimal_to_float(rule.drawdown_limit),
+            auto_square_off_enabled=rule.auto_square_off_enabled,
+            auto_square_off_buffer_pct=self._decimal_to_float(rule.auto_square_off_buffer_pct),
+            auto_hedge_enabled=rule.auto_hedge_enabled,
+            auto_hedge_ratio=self._decimal_to_float(rule.auto_hedge_ratio),
+            notify_email=rule.notify_email,
+            notify_telegram=rule.notify_telegram,
             updated_at=rule.updated_at,
         )
 

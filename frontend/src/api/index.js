@@ -69,6 +69,7 @@ export const api = {
   getRmsConfig: () => request("/api/rms/config"),
   updateRmsConfig: (payload) => request("/api/rms/config", { method: "POST", body: payload }),
   rmsSquareOff: () => request("/api/rms/squareoff", { method: "POST" }),
+  enforceRms: () => request("/api/rms/enforce", { method: "POST" }),
   getSupportedBrokers: () => request("/api/brokers/supported"),
   getBrokers: () => request("/api/brokers"),
   connectBroker: (payload) => request("/api/brokers/connect", { method: "POST", body: payload }),

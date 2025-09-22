@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Iterable
 
+from loguru import logger
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -161,11 +162,15 @@ class StrategyService:
         existing = self._active_run(strategy)
         if existing is not None:
             raise ValueError("Strategy already running")
+        base_configuration = dict(strategy.params or {})
+        override_configuration = dict(payload.configuration or {})
+        merged_configuration = {**base_configuration, **override_configuration}
+
         run = StrategyRun(
             strategy_id=strategy.id,
             mode=StrategyMode(payload.mode.value),
             status=StrategyRunStatus.running,
-            parameters=payload.configuration or {},
+            parameters=merged_configuration,
             result_metrics={"pnl": 0.0, "trades": 0},
             started_at=datetime.utcnow(),
         )
@@ -173,16 +178,56 @@ class StrategyService:
         self.session.add(run)
         self.session.add(strategy)
         self.session.flush()
+
+        log_context = {
+            "configuration": merged_configuration,
+            "source": override_configuration.get("source"),
+            "mode": payload.mode.value,
+        }
         self._append_log(
             strategy_id=strategy.id,
             run_id=run.id,
             level=StrategyLogLevel.info,
             message=f"Strategy started in {payload.mode.value} mode",
-            context={"configuration": payload.configuration},
+            context={k: v for k, v in log_context.items() if v is not None},
         )
         self.session.commit()
         self.session.refresh(run)
         self.session.refresh(strategy)
+
+        context_payload = {
+            "mode": payload.mode.value,
+            "configuration": merged_configuration,
+            "source": override_configuration.get("source", "manual"),
+        }
+        try:
+            from app.tasks.strategy import trigger_strategy_run  # local import to avoid circular dependency
+
+            trigger_strategy_run.delay(
+                user_id=str(user_id),
+                strategy_id=str(strategy.id),
+                context=context_payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Falling back to synchronous strategy execution",
+                strategy_id=str(strategy.id),
+                run_id=str(run.id),
+                error=str(exc),
+            )
+            try:
+                trigger_strategy_run.apply(
+                    args=(str(user_id), str(strategy.id)),
+                    kwargs={"context": context_payload},
+                )
+            except Exception as inner_exc:  # noqa: BLE001
+                logger.error(
+                    "Failed to execute strategy run",
+                    strategy_id=str(strategy.id),
+                    run_id=str(run.id),
+                    error=str(inner_exc),
+                )
+
         return self._to_run_read(run)
 
     def stop_strategy(

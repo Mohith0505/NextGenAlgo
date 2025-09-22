@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -14,6 +14,13 @@ class RmsConfigBase(BaseModel):
     max_daily_lots: Optional[int] = Field(default=None, description="Maximum cumulative lots per trading day")
     exposure_limit: Optional[float] = Field(default=None, description="Notional exposure cap across positions")
     margin_buffer_pct: Optional[float] = Field(default=None, description="Percentage of margin that must remain after pre-trade checks")
+    drawdown_limit: Optional[float] = Field(default=None, description="Maximum equity drawdown allowed before automation triggers")
+    auto_square_off_enabled: Optional[bool] = Field(default=None, description="Automatically square off positions when limits are breached")
+    auto_square_off_buffer_pct: Optional[float] = Field(default=None, description="Buffer percentage applied before auto square-off")
+    auto_hedge_enabled: Optional[bool] = Field(default=None, description="Automatically place hedge orders when risk thresholds are breached")
+    auto_hedge_ratio: Optional[float] = Field(default=None, description="Ratio used to size hedge positions")
+    notify_email: Optional[bool] = Field(default=None, description="Send RMS email alerts")
+    notify_telegram: Optional[bool] = Field(default=None, description="Send RMS Telegram alerts")
 
 
 class RmsConfigRead(RmsConfigBase):
@@ -36,6 +43,7 @@ class RmsStatusRead(BaseModel):
     available_margin: float = 0.0
     margin_buffer_pct: Optional[float] = None
     alerts: list[str] = Field(default_factory=list)
+    automations: list[str] = Field(default_factory=list)
 
 
 class PositionSnapshot(BaseModel):
