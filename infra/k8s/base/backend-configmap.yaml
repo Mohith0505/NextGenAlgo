@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: nextgen-algo
+  labels:
+    app: backend
+    tier: api
+    component: config
+  annotations:
+    description: Environment configuration for the FastAPI backend
+    managed-by: devops
+  data:
+    DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/nextgen_algo
+    REDIS_URL: redis://redis:6379/0
+    PROMETHEUS_MULTIPROC_DIR: /tmp/prom
