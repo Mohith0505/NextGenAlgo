@@ -1,4 +1,4 @@
-﻿from uuid import UUID
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -65,6 +65,19 @@ def refresh_broker_session(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
+
+@router.post("/{broker_id}/logout", response_model=BrokerRead)
+def logout_broker(
+    broker_id: UUID,
+    broker_service: BrokerService = Depends(get_broker_service),
+    current_user: User | None = Depends(get_current_user),
+) -> BrokerRead:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    broker = broker_service.logout(current_user.id, broker_id)
+    if broker is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker not found")
+    return broker
 
 @router.delete("/{broker_id}", response_model=Message, status_code=status.HTTP_200_OK)
 def delete_broker(

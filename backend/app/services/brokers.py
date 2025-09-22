@@ -115,7 +115,10 @@ class BrokerService:
     # ------------------------------------------------------------------
     def connect(self, user_id: uuid.UUID, payload: BrokerConnectRequest) -> BrokerRead:
         adapter = get_adapter(payload.broker_name)
-        session = adapter.connect(payload.credentials)
+        credentials = dict(payload.credentials or {})
+        if payload.client_code and "client_code" not in credentials:
+            credentials["client_code"] = payload.client_code
+        session = adapter.connect(credentials)
 
         broker = self._find_existing(user_id, adapter.broker_name, payload.client_code)
         if broker is None:
@@ -145,9 +148,23 @@ class BrokerService:
             raise ValueError("Broker not found")
 
         adapter = get_adapter(broker.broker_name)
-        session = adapter.connect(payload.credentials)
+        credentials = dict(payload.credentials or {})
+        if broker.client_code and "client_code" not in credentials:
+            credentials["client_code"] = broker.client_code
+        session = adapter.connect(credentials)
         broker.session_token = session.token
         broker.status = BrokerStatus.connected
+        self.session.add(broker)
+        self.session.commit()
+        self.session.refresh(broker)
+        return self._to_broker_schema(broker)
+
+    def logout(self, user_id: uuid.UUID, broker_id: uuid.UUID) -> BrokerRead | None:
+        broker = self._get_broker(broker_id, user_id)
+        if broker is None:
+            return None
+        broker.session_token = None
+        broker.status = BrokerStatus.disconnected
         self.session.add(broker)
         self.session.commit()
         self.session.refresh(broker)
