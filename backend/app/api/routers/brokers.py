@@ -1,9 +1,10 @@
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.dependencies import get_broker_service, get_current_user
-from app.broker_adapters import BrokerAuthenticationError, list_supported_brokers
+from app.broker_adapters import BrokerAuthenticationError, BrokerError, list_supported_brokers
 from app.models.user import User
 from app.schemas.auth import Message
 from app.schemas.broker import (
@@ -36,6 +37,8 @@ def connect_broker(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except BrokerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.get("", response_model=BrokerListResponse)
@@ -66,6 +69,42 @@ def refresh_broker_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@router.get("/{broker_id}/profile", response_model=dict[str, Any])
+def get_broker_profile(
+    broker_id: UUID,
+    broker_service: BrokerService = Depends(get_broker_service),
+    current_user: User | None = Depends(get_current_user),
+) -> dict[str, Any]:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    try:
+        return broker_service.get_profile(current_user.id, broker_id)
+    except BrokerAuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except BrokerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/{broker_id}/login", response_model=BrokerRead)
+def login_broker(
+    broker_id: UUID,
+    broker_service: BrokerService = Depends(get_broker_service),
+    current_user: User | None = Depends(get_current_user),
+) -> BrokerRead:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    try:
+        return broker_service.login(current_user.id, broker_id)
+    except BrokerAuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except BrokerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
 @router.post("/{broker_id}/logout", response_model=BrokerRead)
 def logout_broker(
     broker_id: UUID,
@@ -74,7 +113,12 @@ def logout_broker(
 ) -> BrokerRead:
     if current_user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-    broker = broker_service.logout(current_user.id, broker_id)
+    try:
+        broker = broker_service.logout(current_user.id, broker_id)
+    except BrokerAuthenticationError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    except BrokerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     if broker is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker not found")
     return broker

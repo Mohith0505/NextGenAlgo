@@ -60,6 +60,26 @@ function OrderTicket({
           required
         />
       </label>
+      <div className="inline-grid">
+        <label>
+          Exchange (optional)
+          <input
+            type="text"
+            placeholder="e.g., NSE"
+            value={formState.exchange ?? ""}
+            onChange={(e) => setField("exchange", e.target.value)}
+          />
+        </label>
+        <label>
+          Symbol Token (optional)
+          <input
+            type="text"
+            placeholder="e.g., 3045"
+            value={formState.symbolToken ?? ""}
+            onChange={(e) => setField("symbolToken", e.target.value)}
+          />
+        </label>
+      </div>
       <label>
         {quantityLabel}
         <input

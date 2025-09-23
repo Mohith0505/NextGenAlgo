@@ -435,6 +435,16 @@ class BrokerService:
             take_profit=payload.take_profit,
             stop_loss=payload.stop_loss,
             strategy_id=str(payload.strategy_id) if payload.strategy_id else None,
+            exchange=payload.exchange,
+            symbol_token=payload.symbol_token,
+            variety=payload.variety.value if payload.variety else None,
+            product_type=payload.product_type.value if payload.product_type else None,
+            duration=payload.duration.value if payload.duration else None,
+            disclosed_quantity=payload.disclosed_quantity,
+            trigger_price=payload.trigger_price,
+            squareoff=payload.squareoff,
+            trailing_stop_loss=payload.trailing_stop_loss,
+            order_tag=payload.order_tag,
         )
         adapter_result = adapter.place_order(broker.session_token, order_payload)
 
@@ -549,6 +559,16 @@ class BrokerService:
                     take_profit=payload.take_profit,
                     stop_loss=payload.stop_loss,
                     strategy_id=str(payload.strategy_id) if payload.strategy_id else None,
+                    exchange=payload.exchange,
+                    symbol_token=payload.symbol_token,
+                    variety=payload.variety.value if payload.variety else None,
+                    product_type=payload.product_type.value if payload.product_type else None,
+                    duration=payload.duration.value if payload.duration else None,
+                    disclosed_quantity=payload.disclosed_quantity,
+                    trigger_price=payload.trigger_price,
+                    squareoff=payload.squareoff,
+                    trailing_stop_loss=payload.trailing_stop_loss,
+                    order_tag=payload.order_tag,
                 )
 
                 started_at = utcnow()

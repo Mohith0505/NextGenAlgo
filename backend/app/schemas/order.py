@@ -13,6 +13,25 @@ class OrderSideEnum(str, Enum):
     SELL = "SELL"
 
 
+
+
+class OrderVarietyEnum(str, Enum):
+    NORMAL = "NORMAL"
+    STOPLOSS = "STOPLOSS"
+    ROBO = "ROBO"
+
+
+class ProductTypeEnum(str, Enum):
+    DELIVERY = "DELIVERY"
+    CARRYFORWARD = "CARRYFORWARD"
+    MARGIN = "MARGIN"
+    INTRADAY = "INTRADAY"
+    BO = "BO"
+
+
+class OrderDurationEnum(str, Enum):
+    DAY = "DAY"
+    IOC = "IOC"
 class OrderTypeEnum(str, Enum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
@@ -35,6 +54,16 @@ class OrderCreate(BaseModel):
     take_profit: Optional[float] = Field(default=None, gt=0)
     stop_loss: Optional[float] = Field(default=None, gt=0)
     strategy_id: Optional[UUID] = None
+    exchange: Optional[str] = Field(default=None, description="Exchange hint such as NSE/BSE")
+    symbol_token: Optional[str] = Field(default=None, description="Angel One symbol token")
+    variety: Optional[OrderVarietyEnum] = Field(default=OrderVarietyEnum.NORMAL)
+    product_type: Optional[ProductTypeEnum] = Field(default=None)
+    duration: Optional[OrderDurationEnum] = Field(default=OrderDurationEnum.DAY)
+    disclosed_quantity: Optional[int] = Field(default=None, ge=0)
+    trigger_price: Optional[float] = Field(default=None, gt=0)
+    squareoff: Optional[float] = Field(default=None, gt=0)
+    trailing_stop_loss: Optional[float] = Field(default=None, gt=0)
+    order_tag: Optional[str] = Field(default=None, max_length=20)
 
 
 class OrderRead(BaseModel):

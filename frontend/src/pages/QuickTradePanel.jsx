@@ -170,6 +170,8 @@ function QuickTradePanel() {
         qty: Number(ticket.quantity),
         order_type: ticket.orderType,
         side: ticket.side,
+        exchange: ticket.exchange ? ticket.exchange.trim() : undefined,
+        symbol_token: ticket.symbolToken ? String(ticket.symbolToken).trim() : undefined,
       };
       if (ticket.orderType === "LIMIT") {
         if (!ticket.price) throw new Error("Enter a limit price for limit orders.");

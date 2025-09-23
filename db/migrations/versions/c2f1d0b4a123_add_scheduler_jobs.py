@@ -1,4 +1,4 @@
-"""add scheduler jobs table"""
+"""add scheduler jobs table
 
 Revision ID: c2f1d0b4a123
 Revises: b1f2c8f061b7

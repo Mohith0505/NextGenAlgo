@@ -8,6 +8,34 @@ import pytest
 from app.broker_adapters.angel import AngelAdapter
 from app.broker_adapters.base import BrokerAuthenticationError, BrokerOrderError, BrokerError, OrderPayload
 
+@pytest.fixture()
+def angel_master_stub(monkeypatch: pytest.MonkeyPatch):
+    class DummyMaster:
+        def __init__(self) -> None:
+            self.records: dict[tuple[str, str], dict[str, str]] = {}
+
+        def add(self, tradingsymbol: str, token: str, exchange: str = "NSE") -> None:
+            key = (tradingsymbol.strip().upper(), exchange.strip().upper())
+            record = {
+                "tradingsymbol": key[0],
+                "symbol_token": token,
+                "exchange": key[1],
+            }
+            self.records[key] = record
+            self.records.setdefault((key[0], ""), record)
+
+        def lookup(self, symbol: str, *, exchange: str | None = None):
+            key = (symbol.strip().upper(), (exchange or "").strip().upper())
+            return self.records.get(key)
+
+    master = DummyMaster()
+    monkeypatch.setattr("app.utils.angel_master.get_angel_instrument_master", lambda: master)
+    return master
+
+
+pytestmark = pytest.mark.usefixtures("angel_master_stub")
+
+
 
 class DummyResponse:
     def __init__(self, payload: dict, status_code: int = 200) -> None:
@@ -416,3 +444,13 @@ def test_convert_position_posts_payload(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["method"] == "POST"
     assert str(captured["url"]).endswith("/rest/secure/angelbroking/order/v1/convertPosition")
     assert captured["json"]["newproducttype"] == "INTRADAY"
+
+
+def test_resolve_instrument_uses_master(monkeypatch: pytest.MonkeyPatch, angel_master_stub):
+    angel_master_stub.add("SBIN-EQ", "3045", "NSE")
+
+    adapter = AngelAdapter()
+    instrument = adapter._resolve_instrument("SBIN-EQ")
+
+    assert instrument["symbol_token"] == "3045"
+    assert instrument["tradingsymbol"] == "SBIN-EQ"

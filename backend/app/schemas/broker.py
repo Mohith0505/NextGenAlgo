@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class BrokerStatusEnum(str, Enum):
     connected = "connected"
+    disconnected = "disconnected"
     expired = "expired"
     error = "error"
 
@@ -38,6 +39,7 @@ class BrokerRead(BaseModel):
     status: BrokerStatusEnum
     created_at: datetime
     accounts: list[BrokerAccountRead] = Field(default_factory=list)
+    has_saved_credentials: bool = Field(default=False)
 
     model_config = ConfigDict(from_attributes=True)
 

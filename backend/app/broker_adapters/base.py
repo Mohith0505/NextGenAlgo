@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -27,6 +27,16 @@ class OrderPayload:
     stop_loss: float | None = None
     take_profit: float | None = None
     strategy_id: str | None = None
+    exchange: str | None = None
+    symbol_token: str | None = None
+    variety: str | None = None
+    product_type: str | None = None
+    duration: str | None = None
+    disclosed_quantity: int | None = None
+    trigger_price: float | None = None
+    squareoff: float | None = None
+    trailing_stop_loss: float | None = None
+    order_tag: str | None = None
 
 
 @dataclass(slots=True)
@@ -82,11 +92,14 @@ class BaseBrokerAdapter(ABC):
     def cancel_order(self, session_token: str, order_id: str) -> bool:
         raise NotImplementedError("Order cancel not implemented for this adapter")
 
-    def get_positions(self, session_token: str) -> list[dict[str, Any]]:
-        return []
+    def get_positions(self, session_token: str) -> Mapping[str, Any]:
+        return {"net": [], "day": []}
 
-    def get_holdings(self, session_token: str) -> list[dict[str, Any]]:
-        return []
+    def get_holdings(self, session_token: str) -> Mapping[str, Any]:
+        return {"holdings": [], "summary": None}
+
+    def convert_position(self, session_token: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        raise NotImplementedError("Position conversion not implemented for this adapter")
 
     def get_margin(self, session_token: str) -> Mapping[str, Any]:
         return {}
