@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import math
 import uuid
+from threading import Lock
 from time import perf_counter
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, inspect, select, text
+from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.orm import Session, joinedload
 
 from app.broker_adapters import (
@@ -29,20 +31,63 @@ from app.schemas.order import (
     OrderCreate,
     OrderRead,
 )
+from app.schemas.portfolio import (
+    HoldingsResponse,
+    PositionConvertRequest,
+    PositionConvertResponse,
+    PositionsResponse,
+)
 from app.services.account_registry import AccountRegistryService
 from app.services.rms import RmsService, RmsViolationError
+from app.utils.crypto import (
+    CredentialCipherError,
+    CredentialDecryptError,
+    decrypt_credentials,
+    encrypt_credentials,
+)
 from app.utils.dt import utcnow
 
 
 class BrokerService:
     """Coordinates broker adapters with the database-backed domain models."""
 
+    _schema_lock: Lock = Lock()
+    _schema_initialized: dict[int, bool] = {}
+
+
     def __init__(self, session: Session) -> None:
         self.session = session
+        self._ensure_schema()
         self.rms_service = RmsService(session)
         self.account_registry = AccountRegistryService(session)
 
-    # ------------------------------------------------------------------
+    def _ensure_schema(self) -> None:
+        bind = self.session.bind
+        if bind is None:
+            return
+
+        bind_id = id(bind)
+        if self._schema_initialized.get(bind_id):
+            return
+
+        with self._schema_lock:
+            if self._schema_initialized.get(bind_id):
+                return
+
+            inspector = inspect(bind)
+            try:
+                columns = {column["name"] for column in inspector.get_columns("brokers")}
+            except NoSuchTableError:
+                self._schema_initialized[bind_id] = True
+                return
+
+            if "credentials_encrypted" not in columns:
+                with bind.begin() as connection:
+                    connection.execute(text("ALTER TABLE brokers ADD COLUMN credentials_encrypted TEXT"))
+
+            self._schema_initialized[bind_id] = True
+
+# ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
     def _select_brokers(self, user_id: uuid.UUID) -> Select[tuple[Broker]]:
@@ -86,7 +131,7 @@ class BrokerService:
         return account
 
     def _to_broker_schema(self, broker: Broker) -> BrokerRead:
-        return BrokerRead.model_validate(broker)
+        return BrokerRead.model_validate(broker, from_attributes=True)
 
     def _order_query(self, user_id: uuid.UUID) -> Select[tuple[Order]]:
         return (
@@ -115,10 +160,7 @@ class BrokerService:
     # ------------------------------------------------------------------
     def connect(self, user_id: uuid.UUID, payload: BrokerConnectRequest) -> BrokerRead:
         adapter = get_adapter(payload.broker_name)
-        credentials = dict(payload.credentials or {})
-        if payload.client_code and "client_code" not in credentials:
-            credentials["client_code"] = payload.client_code
-        session = adapter.connect(credentials)
+        provided_credentials = dict(payload.credentials or {})
 
         broker = self._find_existing(user_id, adapter.broker_name, payload.client_code)
         if broker is None:
@@ -127,8 +169,37 @@ class BrokerService:
                 broker_name=adapter.broker_name,
                 client_code=payload.client_code,
             )
+        elif payload.client_code and broker.client_code != payload.client_code:
+            broker.client_code = payload.client_code
 
-        broker.session_token = session.token
+        effective_credentials: dict[str, Any] = dict(provided_credentials)
+        using_saved_credentials = False
+        if not effective_credentials:
+            if broker.credentials_encrypted:
+                try:
+                    effective_credentials = decrypt_credentials(broker.credentials_encrypted)
+                except CredentialDecryptError as exc:
+                    raise BrokerAuthenticationError(
+                        "Stored credentials are invalid; please reconnect with new credentials"
+                    ) from exc
+                using_saved_credentials = True
+            else:
+                raise BrokerAuthenticationError("Broker credentials are required to establish a connection")
+
+        if broker.client_code and "client_code" not in effective_credentials:
+            effective_credentials["client_code"] = broker.client_code
+        elif payload.client_code:
+            effective_credentials["client_code"] = payload.client_code
+
+        session_obj = adapter.connect(dict(effective_credentials))
+
+        if not using_saved_credentials:
+            try:
+                broker.credentials_encrypted = encrypt_credentials(effective_credentials)
+            except CredentialCipherError as exc:
+                raise BrokerError("Failed to persist broker credentials securely") from exc
+
+        broker.session_token = session_obj.token
         broker.status = BrokerStatus.connected
         self.session.add(broker)
         self.session.flush()
@@ -148,11 +219,164 @@ class BrokerService:
             raise ValueError("Broker not found")
 
         adapter = get_adapter(broker.broker_name)
-        credentials = dict(payload.credentials or {})
+        incoming_credentials = dict(payload.credentials or {})
+        effective_credentials: dict[str, Any] = dict(incoming_credentials)
+        if broker.client_code and "client_code" not in effective_credentials:
+            effective_credentials["client_code"] = broker.client_code
+
+        session_obj = None
+        refresh_exc: BrokerError | None = None
+        refresh_fn = getattr(adapter, "refresh_session", None)
+        if broker.session_token and callable(refresh_fn):
+            try:
+                session_obj = refresh_fn(broker.session_token)  # type: ignore[misc] - runtime capability check
+            except BrokerAuthenticationError as exc:
+                refresh_exc = exc
+            except BrokerError as exc:
+                refresh_exc = exc
+
+        if session_obj is None:
+            if not effective_credentials and broker.credentials_encrypted:
+                try:
+                    effective_credentials = decrypt_credentials(broker.credentials_encrypted)
+                except CredentialDecryptError as exc:
+                    raise BrokerAuthenticationError("Stored credentials are invalid; please reconnect with new credentials") from exc
+                if broker.client_code and "client_code" not in effective_credentials:
+                    effective_credentials["client_code"] = broker.client_code
+
+            if not effective_credentials:
+                if refresh_exc is not None:
+                    if isinstance(refresh_exc, BrokerAuthenticationError):
+                        raise refresh_exc
+                    raise BrokerAuthenticationError(str(refresh_exc)) from refresh_exc
+                raise BrokerAuthenticationError("Broker session expired; please reconnect with credentials")
+
+            session_obj = adapter.connect(dict(effective_credentials))
+
+            if incoming_credentials:
+                try:
+                    broker.credentials_encrypted = encrypt_credentials(effective_credentials)
+                except CredentialCipherError as exc:
+                    raise BrokerError("Failed to persist broker credentials securely") from exc
+
+        broker.session_token = session_obj.token
+        broker.status = BrokerStatus.connected
+        self.session.add(broker)
+        self.session.commit()
+        self.session.refresh(broker)
+        return self._to_broker_schema(broker)
+
+    def get_profile(self, user_id: uuid.UUID, broker_id: uuid.UUID) -> Mapping[str, Any]:
+        broker = self._get_broker(broker_id, user_id)
+        if broker is None:
+            raise ValueError("Broker not found")
+        if not broker.session_token:
+            raise BrokerAuthenticationError("Broker session expired; please refresh the connection")
+
+        adapter = get_adapter(broker.broker_name)
+        profile_fn = getattr(adapter, "get_profile", None)
+        if not callable(profile_fn):
+            raise BrokerError(f"{broker.broker_name} does not support profile retrieval")
+
+        return profile_fn(broker.session_token)
+
+    def get_positions(self, user_id: uuid.UUID, broker_id: uuid.UUID) -> PositionsResponse:
+        broker = self._get_broker(broker_id, user_id)
+        if broker is None:
+            raise ValueError("Broker not found")
+        if not broker.session_token:
+            raise BrokerAuthenticationError("Broker session expired; please refresh the connection")
+
+        adapter = get_adapter(broker.broker_name)
+        positions_fn = getattr(adapter, "get_positions", None)
+        if not callable(positions_fn):
+            raise BrokerError(f"{broker.broker_name} does not support position retrieval")
+
+        raw = positions_fn(broker.session_token)
+        if isinstance(raw, PositionsResponse):
+            return raw
+        data = raw if isinstance(raw, dict) else {"net": [], "day": []}
+        try:
+            return PositionsResponse.model_validate(data)
+        except Exception as exc:  # noqa: BLE001
+            raise BrokerError("Failed to parse broker positions payload") from exc
+
+    def get_holdings(self, user_id: uuid.UUID, broker_id: uuid.UUID) -> HoldingsResponse:
+        broker = self._get_broker(broker_id, user_id)
+        if broker is None:
+            raise ValueError("Broker not found")
+        if not broker.session_token:
+            raise BrokerAuthenticationError("Broker session expired; please refresh the connection")
+
+        adapter = get_adapter(broker.broker_name)
+        holdings_fn = getattr(adapter, "get_holdings", None)
+        if not callable(holdings_fn):
+            raise BrokerError(f"{broker.broker_name} does not support holdings retrieval")
+
+        raw = holdings_fn(broker.session_token)
+        if isinstance(raw, HoldingsResponse):
+            return raw
+        data = raw if isinstance(raw, dict) else {"holdings": [], "summary": None}
+        try:
+            return HoldingsResponse.model_validate(data)
+        except Exception as exc:  # noqa: BLE001
+            raise BrokerError("Failed to parse broker holdings payload") from exc
+
+    def convert_position(
+        self,
+        user_id: uuid.UUID,
+        broker_id: uuid.UUID,
+        payload: PositionConvertRequest,
+    ) -> PositionConvertResponse:
+        broker = self._get_broker(broker_id, user_id)
+        if broker is None:
+            raise ValueError("Broker not found")
+        if not broker.session_token:
+            raise BrokerAuthenticationError("Broker session expired; please refresh the connection")
+
+        adapter = get_adapter(broker.broker_name)
+        convert_fn = getattr(adapter, "convert_position", None)
+        if not callable(convert_fn):
+            raise BrokerError(f"{broker.broker_name} does not support position conversion")
+
+        payload_dict = payload.model_dump(by_alias=True, exclude_none=True)
+        response = convert_fn(broker.session_token, payload_dict)
+        if isinstance(response, PositionConvertResponse):
+            return response
+        if isinstance(response, dict):
+            parsed = response
+        else:
+            status = True if response is None else bool(response)
+            parsed = {"status": status, "data": response}
+        try:
+            return PositionConvertResponse.model_validate(parsed)
+        except Exception as exc:  # noqa: BLE001
+            raise BrokerError("Failed to parse broker position conversion response") from exc
+
+    def login(self, user_id: uuid.UUID, broker_id: uuid.UUID) -> BrokerRead:
+        broker = self._get_broker(broker_id, user_id)
+        if broker is None:
+            raise ValueError("Broker not found")
+
+        if not broker.credentials_encrypted:
+            raise BrokerAuthenticationError("No stored credentials available; please reconnect with credentials")
+
+        adapter = get_adapter(broker.broker_name)
+        try:
+            credentials = decrypt_credentials(broker.credentials_encrypted)
+        except CredentialDecryptError as exc:
+            raise BrokerAuthenticationError("Stored credentials are invalid; please reconnect with new credentials") from exc
+
         if broker.client_code and "client_code" not in credentials:
             credentials["client_code"] = broker.client_code
-        session = adapter.connect(credentials)
-        broker.session_token = session.token
+
+        try:
+            broker.credentials_encrypted = encrypt_credentials(credentials)
+        except CredentialCipherError as exc:
+            raise BrokerError("Failed to persist broker credentials securely") from exc
+
+        session_obj = adapter.connect(dict(credentials))
+        broker.session_token = session_obj.token
         broker.status = BrokerStatus.connected
         self.session.add(broker)
         self.session.commit()
@@ -163,6 +387,12 @@ class BrokerService:
         broker = self._get_broker(broker_id, user_id)
         if broker is None:
             return None
+
+        adapter = get_adapter(broker.broker_name)
+        logout_fn = getattr(adapter, "logout", None)
+        if broker.session_token and callable(logout_fn):
+            logout_fn(broker.session_token)
+
         broker.session_token = None
         broker.status = BrokerStatus.disconnected
         self.session.add(broker)

@@ -6,6 +6,7 @@ from app.api.routers import (
     brokers,
     execution_groups,
     orders,
+    positions,
     risk,
     strategies,
     users,
@@ -19,6 +20,7 @@ api_router.include_router(users.router)
 api_router.include_router(brokers.router)
 api_router.include_router(execution_groups.router)
 api_router.include_router(orders.router)
+api_router.include_router(positions.router)
 api_router.include_router(strategies.router)
 api_router.include_router(risk.router)
 api_router.include_router(analytics.router)

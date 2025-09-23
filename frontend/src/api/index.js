@@ -73,6 +73,7 @@ export const api = {
   getSupportedBrokers: () => request("/api/brokers/supported"),
   getBrokers: () => request("/api/brokers"),
   connectBroker: (payload) => request("/api/brokers/connect", { method: "POST", body: payload }),
+  loginBroker: (brokerId) => request(`/api/brokers/${brokerId}/login`, { method: "POST" }),
   logoutBroker: (brokerId) => request(`/api/brokers/${brokerId}/logout`, { method: "POST" }),
   deleteBroker: (brokerId) => request(`/api/brokers/${brokerId}`, { method: "DELETE" }),
   getOrders: () => request("/api/orders"),
@@ -104,7 +105,10 @@ export const api = {
   stopStrategy: (id, payload) => request(`/api/strategies/${id}/stop`, { method: "POST", body: payload ?? {} }),
   getStrategyLogs: (id) => request(`/api/strategies/${id}/logs`),
   getStrategyPerformance: (id) => request(`/api/strategies/${id}/pnl`),
+  getBrokerPositions: (brokerId) => request(`/api/portfolio/${brokerId}/positions`),
+  getBrokerHoldings: (brokerId) => request(`/api/portfolio/${brokerId}/holdings`),
+  convertBrokerPosition: (brokerId, payload) =>
+    request(`/api/portfolio/${brokerId}/positions/convert`, { method: "POST", body: payload }),
 };
 
 export { API_BASE_URL, request, setAuthToken, getAuthToken };
-
